@@ -64,7 +64,7 @@ import SwiftUI
 ///
 @available(iOS 15.0, macOS 12.0, tvOS 15.0, watchOS 8.0, *)
 public struct CachedAsyncImage<Content>: View where Content: View {
-    
+
     @State private var phase: AsyncImagePhase
     
     private let urlRequest: URLRequest?
@@ -302,13 +302,10 @@ public struct CachedAsyncImage<Content>: View where Content: View {
         self.transaction = transaction
         self.content = content
         
-        self._phase = State(wrappedValue: .empty)
-        do {
-            if let urlRequest = urlRequest, let image = try cachedImage(from: urlRequest, cache: urlCache) {
-                self._phase = State(wrappedValue: .success(image))
-            }
-        } catch {
-            self._phase = State(wrappedValue: .failure(error))
+        if let key = urlRequest?.url?.absoluteString, let cached = decodedImageCache.object(forKey: key as NSString) {
+            self._phase = State(wrappedValue: .success(Self.image(from: cached)))
+        } else {
+            self._phase = State(wrappedValue: .empty)
         }
     }
     
@@ -348,6 +345,18 @@ private extension AsyncImage {
 
 // MARK: - Helpers
 
+#if os(macOS)
+private typealias PlatformImage = NSImage
+#else
+private typealias PlatformImage = UIImage
+#endif
+
+private let decodedImageCache: NSCache<NSString, PlatformImage> = {
+    let cache = NSCache<NSString, PlatformImage>()
+    cache.countLimit = 20
+    return cache
+}()
+
 @available(iOS 15.0, macOS 12.0, tvOS 15.0, watchOS 8.0, *)
 private extension CachedAsyncImage {
     private func remoteImage(from request: URLRequest, session: URLSession) async throws -> (Image, URLSessionTaskMetrics) {
@@ -358,27 +367,34 @@ private extension CachedAsyncImage {
             let lastCachedResponse = CachedURLResponse(response: lastResponse, data: data)
             session.configuration.urlCache!.storeCachedResponse(lastCachedResponse, for: request)
         }
-        return (try image(from: data), metrics)
+        let platformImage = try decodedImage(from: data)
+        if let key = request.url?.absoluteString {
+            decodedImageCache.setObject(platformImage, forKey: key as NSString)
+        }
+        return (Self.image(from: platformImage), metrics)
     }
-    
-    private func cachedImage(from request: URLRequest, cache: URLCache) throws -> Image? {
-        guard let cachedResponse = cache.cachedResponse(for: request) else { return nil }
-        return try image(from: cachedResponse.data)
-    }
-    
-    private func image(from data: Data) throws -> Image {
+
+    private func decodedImage(from data: Data) throws -> PlatformImage {
 #if os(macOS)
         if let nsImage = NSImage(data: data) {
-            return Image(nsImage: nsImage)
+            return nsImage
         } else {
             throw AsyncImage<Content>.LoadingError()
         }
 #else
         if let uiImage = UIImage(data: data, scale: scale) {
-            return Image(uiImage: uiImage)
+            return uiImage
         } else {
             throw AsyncImage<Content>.LoadingError()
         }
+#endif
+    }
+
+    static func image(from platformImage: PlatformImage) -> Image {
+#if os(macOS)
+        Image(nsImage: platformImage)
+#else
+        Image(uiImage: platformImage)
 #endif
     }
 }
